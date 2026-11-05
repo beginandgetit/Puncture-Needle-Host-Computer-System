@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wt901-control"
+version = "0.3.0"
+description = "SDK for WitMotion BLE IMUs (WT901BLE67 / WT9011DCL-BT50): acquisition, decoding, needle-angle GUI"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+ble = ["bleak>=0.22"]
+gui = ["PySide6>=6.5"]
+serial = ["pyserial>=3.5"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+wt901 = "wt901.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+wt901 = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,22 @@
+# Keep the repository free of accidental binary text conversion.
+# Working tree on Windows uses core.autocrlf=true, so text files are stored
+# with LF in the repository and checked out with CRLF.
+* text=auto
+
+# Windows launchers must keep CRLF so cmd.exe parses them correctly.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary artefacts: never diff, merge or convert them.
+*.bin   binary
+*.stl   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.docx  binary
+*.rar   binary
+*.zip   binary
+*.whl   binary
+*.gz    binary
