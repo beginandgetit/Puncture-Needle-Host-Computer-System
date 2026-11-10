@@ -1,0 +1,26 @@
+{
+  "needle_axis_sensor": [
+    -0.07566790695280524,
+    -0.9967890420500565,
+    -0.026191095935691133
+  ],
+  "model_axis": [
+    0.0,
+    1.0,
+    0.0
+  ],
+  "model_right": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "hub_mm": [
+    0.0,
+    18.38,
+    9.56
+  ],
+  "needle_length_mm": 176.35,
+  "cad_mode": true,
+  "euler_order": "ZYX",
+  "invert_quaternion": false
+}

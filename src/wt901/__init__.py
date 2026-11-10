@@ -13,7 +13,7 @@ Lower-level building blocks (parser, controller, sinks) are exported as well,
 so a product can reuse the decoding without the connection management.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.5.1"
 
 from .ble import WITMOTION_BLE, BleProfile, wit_frame, wit_save, wit_unlock
 from .controller import (
@@ -35,9 +35,15 @@ from .errors import (
     WT901Error,
 )
 from .estimator import NeedlePose, NeedleTracker
+from .mapping import (
+    canonical_placement,
+    model_rotation,
+    quaternion_from_reading,
+    reading_quaternion,
+)
 from .model import ImuSample
 from .probe import CaptureAnalysis, ProbeReport, analyze_capture
-from .protocol import Scales, WitParser, encode_combined, encode_split
+from .protocol import Scales, WitParser, encode_combined, encode_quaternion, encode_split
 from .sensor import AsyncWT901, ImuReading, LinkState, SensorStatus, WT901, WT901Config
 
 __all__ = [
@@ -59,6 +65,11 @@ __all__ = [
     # needle angle
     "NeedleTracker",
     "NeedlePose",
+    # sensor <-> needle model mapping
+    "canonical_placement",
+    "model_rotation",
+    "quaternion_from_reading",
+    "reading_quaternion",
     # diagnostics
     "analyze_capture",
     "CaptureAnalysis",
@@ -75,6 +86,7 @@ __all__ = [
     "Scales",
     "ImuSample",
     "encode_combined",
+    "encode_quaternion",
     "encode_split",
     # errors
     "WT901Error",

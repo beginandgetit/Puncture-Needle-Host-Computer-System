@@ -8,6 +8,7 @@ millimetres, with the needle normally pointing down.
 from __future__ import annotations
 
 import math
+import time
 from typing import List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -24,15 +25,24 @@ NEEDLE_LENGTH_MM = 170.0
 
 
 class NeedleView(QWidget):
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, *, compact: bool = False) -> None:
         super().__init__(parent)
-        self.setMinimumSize(620, 480)
+        self._compact = compact
+        self.setMinimumSize(220, 140) if compact else self.setMinimumSize(620, 480)
         self._axis: Vec3 = DOWN
         self._plan: Vec3 = DOWN
         self._deviation = 0.0
         self._stale = False
         self._model = None
         self._base = None
+        self._model_axis = None
+        self._model_hub = None
+        self._model_rotation = None
+        self._model_compact = None
+        self._base_compact = None
+        self._default_preset = "top"
+        self._target = (0.0, 0.0, 0.0)
+        self._preset = "top"
 
         # Camera orientation is a quaternion rotated about *screen* axes
         # (trackball), not a turntable around the world Z axis.  A turntable
@@ -44,13 +54,25 @@ class NeedleView(QWidget):
         self._dist = 400.0
         self._drag: Optional[QPointF] = None
         self._locked = False
+        #: Wall time of the last paintEvent, exposed in the status bar.
+        self.last_paint_ms = 0.0
 
     # ------------------------------------------------------------------ state
-    def set_pose(self, axis: Vec3, plan: Vec3, deviation_deg: float, stale: bool = False) -> None:
+    def set_pose(
+        self,
+        axis: Vec3,
+        plan: Vec3,
+        deviation_deg: float,
+        stale: bool = False,
+        model_rotation: Optional[Quaternion] = None,
+    ) -> None:
         self._axis = axis
         self._plan = plan
         self._deviation = deviation_deg
         self._stale = stale
+        # Full model -> display rotation from the tracker.  ``None`` keeps the
+        # legacy shortest-arc fallback (used before the first pose arrives).
+        self._model_rotation = model_rotation
         self.update()
 
     def set_stale(self, stale: bool) -> None:
@@ -58,23 +80,86 @@ class NeedleView(QWidget):
             self._stale = stale
             self.update()
 
-    def set_model(self, mesh) -> None:
-        """Needle/object model, already positioned so the origin is inside it."""
+    def set_model(self, mesh, axis=None, hub=None) -> None:
+        """Needle/object model.
+
+        ``axis``/``hub`` describe the needle axis and the rotation centre in the
+        model's own coordinates (CAD mode).  When omitted the legacy behaviour is
+        used: the mesh is assumed centred and its needle to point down -Z.
+        """
 
         self._model = mesh
+        self._model_compact = mesh.simplified(600) if (mesh is not None and self._compact) else mesh
+        self._model_axis = tuple(axis) if axis is not None else None
+        self._model_hub = tuple(hub) if hub is not None else None
+        self._model_rotation = None
         self.update()
 
     def set_base(self, mesh) -> None:
         """Reference base (stand); drawn below the origin plane."""
 
         self._base = mesh
+        self._base_compact = mesh.simplified(600) if (mesh is not None and self._compact) else mesh
         self.update()
 
     def reset_camera(self) -> None:
-        self._view_q = _default_view()
-        self._view_m = self._view_q.to_matrix()
+        self.set_camera_preset(self._default_preset)
         self._dist = 400.0
         self.update()
+
+    def set_camera_preset(self, name: str) -> None:
+        """Jump to 俯视 / 主视 / 侧视 / 等轴."""
+
+        q = view_quaternion(name).normalize()
+        self._view_q = q
+        self._view_m = q.to_matrix()
+        self._preset = name
+        self.update()
+
+    def set_distance(self, distance: float) -> None:
+        self._dist = max(120.0, min(1600.0, distance))
+        self.update()
+
+    def fit_distance(self) -> None:
+        """Frame the loaded content (or the needle) and zoom to fit."""
+
+        meshes = [self._model]
+        if not self._compact:
+            meshes.append(self._base)
+        meshes = [m for m in meshes if m is not None]
+        if not meshes:
+            self._target = (0.0, 0.0, -NEEDLE_LENGTH_MM / 2.0)
+            self.set_distance(2.2 * NEEDLE_LENGTH_MM + 80.0)
+            return
+
+        lows = [mesh.bounds()[0] for mesh in meshes]
+        highs = [mesh.bounds()[1] for mesh in meshes]
+        lo = tuple(min(v[i] for v in lows) for i in range(3))
+        hi = tuple(max(v[i] for v in highs) for i in range(3))
+
+        if self._model is not None and self._model_axis is not None and self._model_hub is not None:
+            q = self._model_rotation or Quaternion.from_two_vectors(self._model_axis, self._axis)
+            hub = self._model_hub
+            corners = [
+                (x, y, z)
+                for x in (lo[0], hi[0])
+                for y in (lo[1], hi[1])
+                for z in (lo[2], hi[2])
+            ]
+            pts = [q.rotate(tuple(c[i] - hub[i] for i in range(3))) for c in corners]
+            lo = tuple(min(p[i] for p in pts) for i in range(3))
+            hi = tuple(max(p[i] for p in pts) for i in range(3))
+
+        self._target = tuple((lo[i] + hi[i]) / 2.0 for i in range(3))
+        extent = max(hi[i] - lo[i] for i in range(3))
+        self.set_distance(2.2 * extent + 80.0)
+
+    def set_default_preset(self, name: str) -> None:
+        self._default_preset = name if name in VIEW_LABELS else "top"
+
+    @property
+    def default_preset(self) -> str:
+        return self._default_preset
 
     def set_view_locked(self, locked: bool) -> None:
         """Locked: the scene is a fixed picture; dragging cannot rotate it."""
@@ -93,9 +178,11 @@ class NeedleView(QWidget):
         # Rigid view transform: needle and coordinate frame share it, so they
         # always rotate together when the camera turns.
         m = self._view_m
-        x = m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2]
-        y = m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2]
-        z = m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2]
+        tx, ty, tz = self._target
+        px, py, pz = p[0] - tx, p[1] - ty, p[2] - tz
+        x = m[0][0] * px + m[0][1] * py + m[0][2] * pz
+        y = m[1][0] * px + m[1][1] * py + m[1][2] * pz
+        z = m[2][0] * px + m[2][1] * py + m[2][2] * pz
 
         depth = self._dist - z
         if depth < 80.0:
@@ -105,26 +192,44 @@ class NeedleView(QWidget):
 
     # ---------------------------------------------------------------- painting
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        started = time.perf_counter()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = float(self.width()), float(self.height())
 
         self._paint_background(p, w, h)
         self._paint_grid(p, w, h)
-        self._paint_mesh(p, self._base, w, h, QColor("#4a5a6a"))
-        # the imported model is attached to the needle: rotate it with the pose
-        model_rotation = Quaternion.from_two_vectors(DOWN, self._axis)
+        base_mesh = self._base_compact if self._compact else self._base
+        model_mesh = self._model_compact if self._compact else self._model
+        self._paint_mesh(p, base_mesh, w, h, QColor("#4a5a6a"))
+        # The model is attached to the needle.  Prefer the tracker's full
+        # relative rotation (it keeps the roll about the needle); the
+        # shortest-arc path is only a fallback before the first pose arrives.
+        if self._model_rotation is not None:
+            model_rotation = self._model_rotation
+            pivot = self._model_hub or (0.0, 0.0, 0.0)
+        elif self._model_axis is not None and self._model_hub is not None:
+            model_rotation = Quaternion.from_two_vectors(self._model_axis, self._axis)
+            pivot = self._model_hub
+        else:
+            model_rotation = Quaternion.from_two_vectors(DOWN, self._axis)
+            pivot = (0.0, 0.0, 0.0)
         model_color = QColor(theme.DIM if self._stale else _color_for(self._deviation))
-        self._paint_mesh(p, self._model, w, h, model_color, rotate=model_rotation)
+        self._paint_mesh(p, model_mesh, w, h, model_color, rotate=model_rotation, pivot=pivot)
         self._paint_reference(p, w, h)
         self._paint_planned(p, w, h)
-        self._paint_arc(p, w, h)
+        if not self._compact:
+            self._paint_arc(p, w, h)
         self._paint_needle(p, w, h)
-        self._paint_gnomon(p, w, h)
-        self._paint_legend(p, w, h)
+        if self._compact:
+            self._paint_plane_overlay(p, w, h)
+        else:
+            self._paint_gnomon(p, w, h)
+            self._paint_legend(p, w, h)
 
         if self._stale:
             self._paint_stale(p, w, h)
+        self.last_paint_ms = (time.perf_counter() - started) * 1000.0
 
     def _paint_background(self, p: QPainter, w: float, h: float) -> None:
         grad = QLinearGradient(0, 0, 0, h)
@@ -188,13 +293,20 @@ class NeedleView(QWidget):
         h: float,
         base: QColor,
         rotate: Optional[Quaternion] = None,
+        pivot: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
         """Flat-shaded STL mesh, painter-sorted by depth."""
 
         if mesh is None or not mesh.vertices or not mesh.triangles:
             return
 
-        verts = mesh.vertices if rotate is None else [rotate.rotate(v) for v in mesh.vertices]
+        if rotate is None:
+            verts = [tuple(v[i] - pivot[i] for i in range(3)) for v in mesh.vertices]
+        else:
+            verts = [
+                rotate.rotate(tuple(v[i] - pivot[i] for i in range(3)))
+                for v in mesh.vertices
+            ]
         projected = [self._project(v, w, h) for v in verts]
         faces = []
         for ia, ib, ic in mesh.triangles:
@@ -365,14 +477,90 @@ class NeedleView(QWidget):
         p.setFont(f)
         p.drawText(QRectF(0, h / 2 + 2, w, 24), Qt.AlignCenter, "等待传感器数据…")
 
+
+    # ------------------------------------------------------- plane overlay
+    _PLANE_LABELS = {
+        "front": ("X", "Z"),
+        "side": ("Y", "Z"),
+        "top": ("X", "Y"),
+    }
+
+    def _paint_plane_overlay(self, p: QPainter, w: float, h: float) -> None:
+        """2D axes plus the in-plane angle between the needle and the plan."""
+
+        origin = self._project((0.0, 0.0, 0.0), w, h)
+        ox, oy = origin[0], origin[1]
+
+        arm = max(22.0, min(48.0, min(w, h) * 0.5 - 16.0))
+        p.setPen(QPen(QColor(theme.BORDER), 1))
+        p.drawLine(QPointF(ox - arm, oy), QPointF(ox + arm, oy))
+        p.drawLine(QPointF(ox, oy - arm), QPointF(ox, oy + arm))
+
+        horizontal, vertical = self._PLANE_LABELS.get(self._preset, ("X", "Y"))
+        p.setPen(QPen(QColor(theme.DIM)))
+        f = QFont(theme.FONT_MONO, 8)
+        p.setFont(f)
+        p.drawText(QPointF(min(ox + arm + 5.0, w - 12.0), oy + 4.0), horizontal)
+        p.drawText(QPointF(ox - 3.0, max(oy - arm - 5.0, 10.0)), vertical)
+
+        tip_u = self._project(_scale(self._axis, NEEDLE_LENGTH_MM), w, h)
+        tip_p = self._project(_scale(self._plan, NEEDLE_LENGTH_MM), w, h)
+
+        def screen_angle(tip) -> float:
+            dx, dy = tip[0] - ox, tip[1] - oy
+            return math.degrees(math.atan2(dx, -dy))  # 0 deg = up, clockwise
+
+        def projected_length(tip) -> float:
+            return math.hypot(tip[0] - ox, tip[1] - oy)
+
+        if projected_length(tip_u) < 8.0 or projected_length(tip_p) < 8.0:
+            p.setPen(QPen(QColor(theme.DIM)))
+            p.drawText(QPointF(10.0, h - 10.0), "Δ —")
+            return
+
+        angle_u = screen_angle(tip_u)
+        angle_p = screen_angle(tip_p)
+        delta = (angle_u - angle_p + 180.0) % 360.0 - 180.0
+
+        radius = arm * 0.72
+        points = []
+        steps = 16
+        for i in range(steps + 1):
+            a = math.radians(angle_p + delta * i / steps)
+            points.append(QPointF(ox + radius * math.sin(a), oy - radius * math.cos(a)))
+
+        color = _color_for(self._deviation)
+        p.setPen(QPen(color, 1.4))
+        p.drawPolyline(QPolygonF(points))
+
+        # plan ray (dashed) and needle ray (solid)
+        p.setPen(QPen(QColor(61, 220, 151, 170), 1, Qt.DashLine))
+        p.drawLine(
+            QPointF(ox, oy),
+            QPointF(ox + radius * 1.35 * math.sin(math.radians(angle_p)),
+                    oy - radius * 1.35 * math.cos(math.radians(angle_p))),
+        )
+        p.setPen(QPen(color, 1.6))
+        p.drawLine(
+            QPointF(ox, oy),
+            QPointF(ox + radius * 1.35 * math.sin(math.radians(angle_u)),
+                    oy - radius * 1.35 * math.cos(math.radians(angle_u))),
+        )
+
+        p.setPen(QPen(QColor(theme.TEXT)))
+        f = QFont(theme.FONT_MONO, 9)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(QPointF(9.0, h - 9.0), f"Δ {delta:+.1f}°")
+
     # ------------------------------------------------------------------ mouse
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if self._locked:
+        if self._locked or self._compact:
             return
         self._drag = event.position()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if self._locked or self._drag is None:
+        if self._locked or self._compact or self._drag is None:
             return
         pos = event.position()
         dx = pos.x() - self._drag.x()
@@ -394,13 +582,36 @@ class NeedleView(QWidget):
         self._drag = None
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        self.reset_camera()
+        if not self._compact:
+            self.reset_camera()
 
     def wheelEvent(self, event) -> None:  # noqa: N802
+        if self._compact:
+            return
         delta = event.angleDelta().y()
         factor = 0.9 if delta > 0 else 1.1
         self._dist = max(300.0, min(1400.0, self._dist * factor))
         self.update()
+
+
+
+# Orthographic-ish view matrices (world -> view).  Rows are the view axes
+# expressed in world coordinates; the projection looks along -view_z.
+VIEW_PRESETS = {
+    "top": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "front": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
+    "side": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+}
+VIEW_LABELS = {"top": "俯视", "front": "主视", "side": "侧视", "iso": "等轴"}
+
+
+def view_quaternion(name: str) -> Quaternion:
+    """Camera orientation for a named preset."""
+
+    if name == "iso":
+        return _default_view()
+    matrix = VIEW_PRESETS.get(name, VIEW_PRESETS["top"])
+    return Quaternion.from_matrix(matrix)
 
 
 # ----------------------------------------------------------------- helpers

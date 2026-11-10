@@ -9,9 +9,11 @@ from wt901.protocol import (
     ID_ANGLE,
     ID_COMBINED,
     ID_GYRO,
+    ID_QUATERNION,
     Scales,
     WitParser,
     encode_combined,
+    encode_quaternion,
     encode_split,
     parse_hex_text,
 )
@@ -150,6 +152,62 @@ class TestScales(unittest.TestCase):
         s = parser.feed(frame)[0]
         self.assertAlmostEqual(s.ax, 8.0, places=2)
         self.assertAlmostEqual(s.gy, 1000.0, delta=5.0)
+
+
+class TestQuaternionFrame(unittest.TestCase):
+    """0x59: 55 59 Q0L Q0H ... Q3L Q3H SUM, Q0 = w, scale 1/32768."""
+
+    def setUp(self) -> None:
+        self.parser = WitParser()
+
+    def test_roundtrip(self) -> None:
+        frame = encode_quaternion(0.5, -0.5, 0.25, -0.25)
+        self.assertEqual(len(frame), 11)
+        self.assertEqual(frame[:2], b"\x55\x59")
+
+        samples = self.parser.feed(frame)
+        self.assertEqual(len(samples), 1)
+        s = samples[0]
+        self.assertEqual(s.kind, "quaternion")
+        self.assertTrue(s.has_quaternion())
+        self.assertFalse(s.has_attitude())
+        self.assertAlmostEqual(s.qw, 0.5, places=6)
+        self.assertAlmostEqual(s.qx, -0.5, places=6)
+        self.assertAlmostEqual(s.qy, 0.25, places=6)
+        self.assertAlmostEqual(s.qz, -0.25, places=6)
+
+    def test_q0_is_w(self) -> None:
+        s = self.parser.feed(encode_quaternion(1.0, 0.0, 0.0, 0.0))[0]
+        self.assertAlmostEqual(s.qw, 1.0, places=4)
+        self.assertAlmostEqual(s.qx, 0.0, places=6)
+        self.assertAlmostEqual(self.parser.stats.frames_by_id[ID_QUATERNION], 1)
+
+    def test_bad_checksum_is_rejected(self) -> None:
+        frame = bytearray(encode_quaternion(0.5, 0.5, 0.5, 0.5))
+        frame[-1] ^= 0xFF
+        self.assertEqual(self.parser.feed(bytes(frame)), [])
+        self.assertEqual(self.parser.stats.bad_checksum, 1)
+
+    def test_split_across_notifications(self) -> None:
+        frame = encode_quaternion(0.5, -0.5, 0.25, -0.25)
+        self.assertEqual(self.parser.feed(frame[:6]), [])
+        out = self.parser.feed(frame[6:])
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0].qz, -0.25, places=6)
+
+    def test_byte_by_byte(self) -> None:
+        collected = []
+        for b in encode_quaternion(0.1, 0.2, 0.3, 0.4):
+            collected.extend(self.parser.feed(bytes([b])))
+        self.assertEqual(len(collected), 1)
+        self.assertAlmostEqual(collected[0].qy, 0.3, places=4)
+
+    def test_mixed_with_euler_frames(self) -> None:
+        data = encode_quaternion(0.5, 0.5, 0.5, 0.5) + encode_split(ID_ANGLE, 1, 2, 3)
+        samples = self.parser.feed(data)
+        self.assertEqual([s.kind for s in samples], ["quaternion", "angle"])
+        self.assertTrue(samples[0].has_quaternion())
+        self.assertFalse(samples[1].has_quaternion())
 
 
 if __name__ == "__main__":

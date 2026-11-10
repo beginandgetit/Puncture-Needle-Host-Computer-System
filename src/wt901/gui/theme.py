@@ -74,6 +74,9 @@ QPushButton#Primary {{
 }}
 QPushButton#Primary:hover {{ background: #5bb8ff; }}
 QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
+QPushButton:checked {{ background: {ACCENT}; color: #06121d; border: 1px solid {ACCENT}; }}
+QComboBox {{ background: {PANEL_HI}; border: 1px solid {BORDER}; border-radius: 6px; padding: 4px 8px; color: {TEXT}; }}
+QComboBox QAbstractItemView {{ background: {PANEL}; color: {TEXT}; selection-background-color: {ACCENT}; }}
 """
 
 

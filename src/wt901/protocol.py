@@ -1,7 +1,7 @@
 """WitMotion frame decoding.
 
-Two encodings are supported because WitMotion ships both depending on firmware
-and on how the device is configured:
+Three encodings are supported because WitMotion ships several depending on
+firmware and on how the device is configured:
 
 * split frames, 11 bytes, checksum in the last byte::
 
@@ -9,10 +9,12 @@ and on how the device is configured:
       55 52 WxL ...               TL TH SUM        (0x52 angular rate + temp)
       55 53 RollL ...             VL VH SUM        (0x53 attitude + version)
       55 54 HxL  ...              TL TH SUM        (0x54 magnetic field + temp)
+      55 59 Q0L Q0H Q1L ...       Q3H SUM          (0x59 quaternion Q0..Q3)
       SUM = (sum of the first 10 bytes) & 0xFF
 
     Bytes 8..9 are int16/100 degC for 0x51/0x52/0x54 and a version word for
-    0x53, which is why every split frame is 11 bytes and not 9.
+    0x53, which is why every split frame is 11 bytes and not 9.  The 0x59
+    frame packs four int16 quaternion components in the same 11-byte layout.
 
 * combined frame, 20 bytes, no checksum byte::
 
@@ -21,6 +23,10 @@ and on how the device is configured:
 
     (18 payload bytes + 2 header bytes = 20, so there is no room for a
     checksum; that is why the combined frame can only be sanity-checked.)
+
+The 0x59 quaternion is ``q0 + q1 i + q2 j + q3 k`` with ``q0 = w`` and each
+component scaled by ``1/32768``.  Component order in this module is always
+``(w, x, y, z)``.
 
 Everything here is pure Python and hardware independent, so it can be unit
 tested and can also be used to re-parse a captured hex log.
@@ -40,6 +46,7 @@ from .model import (
     KIND_COMBINED,
     KIND_GYRO,
     KIND_MAG,
+    KIND_QUATERNION,
 )
 
 HEADER = 0x55
@@ -48,6 +55,7 @@ ID_ACCEL = 0x51
 ID_GYRO = 0x52
 ID_ANGLE = 0x53
 ID_MAG = 0x54
+ID_QUATERNION = 0x59
 ID_COMBINED = 0x61
 
 SPLIT_LEN = 11
@@ -60,6 +68,7 @@ _ID_TO_KIND = {
     ID_GYRO: KIND_GYRO,
     ID_ANGLE: KIND_ANGLE,
     ID_MAG: KIND_MAG,
+    ID_QUATERNION: KIND_QUATERNION,
     ID_COMBINED: KIND_COMBINED,
 }
 
@@ -69,6 +78,7 @@ _FIELDS = {
     ID_GYRO: ("gx", "gy", "gz"),
     ID_ANGLE: ("roll", "pitch", "yaw"),
     ID_MAG: ("mx", "my", "mz"),
+    ID_QUATERNION: ("qw", "qx", "qy", "qz"),
     ID_COMBINED: ("ax", "ay", "az", "gx", "gy", "gz", "roll", "pitch", "yaw"),
 }
 
@@ -208,7 +218,7 @@ class WitParser:
             # 20 bytes = no room for a checksum; a 21-byte variant is common on
             # some firmware revisions, controlled by ``combined_checksum``.
             return (COMBINED_LEN + (1 if self.combined_checksum else 0), self.combined_checksum)
-        if ident in (ID_ACCEL, ID_GYRO, ID_ANGLE, ID_MAG):
+        if ident in (ID_ACCEL, ID_GYRO, ID_ANGLE, ID_MAG, ID_QUATERNION):
             if not self.split_frames:
                 return None
             return (SPLIT_LEN, True)
@@ -244,6 +254,8 @@ class WitParser:
                 setattr(sample, name, value / _FULL_SCALE * sc.gyro_dps)
             elif name in ("roll", "pitch", "yaw"):
                 setattr(sample, name, value / _FULL_SCALE * sc.angle_deg)
+            elif name in ("qw", "qx", "qy", "qz"):
+                setattr(sample, name, value / _FULL_SCALE)
             else:  # magnetic: raw counts
                 setattr(sample, name, float(value))
         return sample
@@ -273,6 +285,22 @@ def encode_split(ident: int, x: float, y: float, z: float, scales: Scales = Scal
     body = struct.pack("<hhh", _to_raw(x, fs), _to_raw(y, fs), _to_raw(z, fs))
     body += b"\x00\x00"  # temperature / version placeholder
     frame = bytes([HEADER, ident]) + body
+    return frame + bytes([sum(frame) & 0xFF])
+
+
+def encode_quaternion(
+    qw: float, qx: float, qy: float, qz: float
+) -> bytes:
+    """Encode a 0x59 quaternion frame (``q0 = w``), checksum included."""
+
+    body = struct.pack(
+        "<hhhh",
+        _to_raw(qw, 1.0),
+        _to_raw(qx, 1.0),
+        _to_raw(qy, 1.0),
+        _to_raw(qz, 1.0),
+    )
+    frame = bytes([HEADER, ID_QUATERNION]) + body
     return frame + bytes([sum(frame) & 0xFF])
 
 

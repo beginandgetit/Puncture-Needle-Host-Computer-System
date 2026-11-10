@@ -42,7 +42,7 @@ BLE 那部分才需要 `bleak`，解析、模拟、离线回放都不需要。
 | `notify_uuid` | `None` | 固定数据特征值，`probe` 会告诉你 |
 | `write_uuid` | `None` | 写入特征值，只有要发寄存器命令时才需要 |
 | `profile` | `None` | 已知 GATT 布局，见 `wt901.ble.WITMOTION_BLE` |
-| `emit_on` | `"attitude"` | `attitude`=每帧姿态角产出一条；`any`=任意帧都产出 |
+| `emit_on` | `"attitude"` | `attitude`=每帧姿态角或四元数产出一条；`any`=任意帧都产出 |
 | `scales` | `Scales(16, 2000, 180)` | 量程，必须与设备一致 |
 | `combined_checksum` | `False` | 20 字节合并帧若实际 21 字节则打开 |
 | `reconnect` | `True` | 断线自动重连 |
@@ -79,12 +79,14 @@ cfg = WT901Config(name_contains="WT901BLE67", profile=WITMOTION_BLE)
 | `t_wall` | 墙钟时间（用于与其他系统对时/落盘） |
 | `seq` | 递增序号，可用来判断"有没有新数据" |
 | `roll / pitch / yaw` | 姿态角，已应用角度零点 |
+| `qw / qx / qy / qz` | 设备四元数（传感器系，Hamilton，`w/x/y/z`）；设备只发欧拉角时为 `None` |
 | `ax / ay / az` | 加速度 |
 | `gx / gy / gz` | 角速度，已应用零偏 |
 | `temp_c` | 温度，设备不提供时为 `None` |
 | `has_attitude` | 设备是否真的输出了姿态角（`emit_on="any"` 且只有加速度帧时为 `False`） |
 
-方法：`as_dict()`、`to_json()`、`str()`。
+属性/方法：`has_quaternion`、`quaternion`（返回 `(w,x,y,z)` 或 `None`）、
+`as_dict()`、`to_json()`、`str()`。
 
 ## 5. 方法与状态
 
@@ -225,7 +227,8 @@ cmd = ctrl.step(Snapshot.from_reading(reading), time.monotonic())
 - 控制/读取线程不要做重活；`read()` 间隔建议 ≥ 10 ms。
 - Windows 定时器粒度约 15.6 ms，`asyncio.sleep` 的实际步进会大于 1 ms。
 - 单实例一个设备；多设备请每台一个 `WT901`（各自线程），或在一个 asyncio 循环里多个 `AsyncWT901`。
-- SDK 不做姿态融合，直接使用设备输出的欧拉角。
+- SDK 不做姿态融合：优先使用设备 0x59 四元数，只有欧拉角帧时退回设备角度
+  （默认 ZYX 假设）。针体界面再通过 `mapping.py` 做传感器↔模型映射。
 - 设备配置写入（改 ODR、改回传内容）尚未实现，目前依赖设备当前配置。
 
 ## 12. 版本

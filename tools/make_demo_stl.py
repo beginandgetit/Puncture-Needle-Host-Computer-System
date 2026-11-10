@@ -67,6 +67,31 @@ def box(tris: List[Tri], sx: float, sy: float, sz: float, z_top: float) -> None:
         tris.append((v[a], v[b], v[c]))
 
 
+
+def ellipsoid(
+    tris: List[Tri], rx: float, ry: float, rz: float, segments: int = 36, rings: int = 18
+) -> None:
+    """Simple ellipsoid placeholder (not anatomy, just a test body)."""
+
+    def point(u: float, v: float) -> Tuple[float, float, float]:
+        return (
+            rx * math.sin(v) * math.cos(u),
+            ry * math.sin(v) * math.sin(u),
+            rz * math.cos(v),
+        )
+
+    for i in range(rings):
+        v0 = math.pi * i / rings
+        v1 = math.pi * (i + 1) / rings
+        for j in range(segments):
+            u0 = 2 * math.pi * j / segments
+            u1 = 2 * math.pi * (j + 1) / segments
+            a, b = point(u0, v0), point(u1, v0)
+            c, d = point(u1, v1), point(u0, v1)
+            tris.append((a, b, c))
+            tris.append((a, c, d))
+
+
 def write_stl(path: Path, tris: List[Tri]) -> None:
     with path.open("wb") as fh:
         fh.write(b"wt901 demo".ljust(80, b"\0"))
@@ -100,8 +125,13 @@ def main() -> int:
     box(base, 90.0, 90.0, 8.0, z_top=0.0)
     write_stl(out / "base_demo.stl", base)
 
+    body: List[Tri] = []
+    ellipsoid(body, 240.0, 110.0, 90.0)
+    write_stl(out / "body_demo.stl", body)
+
     print(f"needle: {len(needle)} tris -> {out / 'needle_demo.stl'}")
     print(f"base:   {len(base)} tris -> {out / 'base_demo.stl'}")
+    print(f"body:   {len(body)} tris -> {out / 'body_demo.stl'}")
     return 0
 
 

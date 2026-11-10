@@ -14,6 +14,7 @@ is unit tested and can also be run on a saved capture:
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -23,6 +24,7 @@ from .protocol import (
     ID_COMBINED,
     ID_GYRO,
     ID_MAG,
+    ID_QUATERNION,
     Scales,
     WitParser,
 )
@@ -32,6 +34,7 @@ _KIND_NAMES = {
     ID_GYRO: "0x52 gyro",
     ID_ANGLE: "0x53 angle",
     ID_MAG: "0x54 mag",
+    ID_QUATERNION: "0x59 quaternion",
     ID_COMBINED: "0x61 combined",
 }
 
@@ -102,8 +105,10 @@ def analyze_capture(
     if samples:
         if set(ids) == {ID_COMBINED}:
             format_name = "0x55 0x61 combined, 20 bytes, no checksum"
-        elif set(ids) <= {ID_ACCEL, ID_GYRO, ID_ANGLE, ID_MAG}:
-            format_name = "0x55 0x51/0x52/0x53 split frames, 11 bytes, checksummed"
+        elif set(ids) == {ID_QUATERNION}:
+            format_name = "0x55 0x59 quaternion, 11 bytes, checksummed"
+        elif set(ids) <= {ID_ACCEL, ID_GYRO, ID_ANGLE, ID_MAG, ID_QUATERNION}:
+            format_name = "0x55 0x51/0x52/0x53/0x59 split frames, 11 bytes, checksummed"
         else:
             format_name = "mixed"
             notes.append("several frame types decoded; check the device output configuration")
@@ -265,10 +270,12 @@ async def probe_device(
                     notify_uuids.append(char.uuid)
 
         buffers: Dict[str, bytearray] = {uuid: bytearray() for uuid in notify_uuids}
+        arrivals: Dict[str, List[float]] = {uuid: [] for uuid in notify_uuids}
 
         def make_handler(uuid: str):
             def handler(_sender, data: bytearray) -> None:
                 buffers[uuid].extend(data)
+                arrivals[uuid].append(time.monotonic())
 
             return handler
 
@@ -303,6 +310,21 @@ async def probe_device(
     chosen = max(buffers.items(), key=lambda kv: len(kv[1]), default=(None, bytearray()))
     chosen_uuid = chosen[0] if chosen[1] else None
     capture = bytes(chosen[1]) if chosen_uuid else b""
+
+    if chosen_uuid and len(arrivals.get(chosen_uuid, [])) >= 3:
+        times = arrivals[chosen_uuid]
+        gaps = sorted(times[i] - times[i - 1] for i in range(1, len(times)))
+        p50 = gaps[len(gaps) // 2]
+        p95 = gaps[min(len(gaps) - 1, int(len(gaps) * 0.95))]
+        warnings.append(
+            f"notify interval: p50={p50 * 1000:.0f} ms, p95={p95 * 1000:.0f} ms, "
+            f"max={gaps[-1] * 1000:.0f} ms (n={len(times)})"
+        )
+        if p50 > 0.0 and gaps[-1] > 3.0 * p50:
+            warnings.append(
+                "notification jitter is high: check BLE connection interval, "
+                "Windows power saving, 2.4 GHz interference, or a busy vendor app"
+            )
 
     analysis = analyze_capture(capture, duration_s=duration) if capture else None
 

@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from .model import ImuSample
 
 Vec3 = Tuple[float, float, float]
+Quat4 = Tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,8 @@ class Snapshot:
     attitude_t: float
     accel_t: float
     gyro_t: float
+    quaternion: Optional[Quat4] = None
+    quaternion_t: float = 0.0
 
     def age_attitude(self, now: float) -> float:
         return now - self.attitude_t
@@ -35,6 +38,9 @@ class Snapshot:
 
     def age_gyro(self, now: float) -> float:
         return now - self.gyro_t
+
+    def age_quaternion(self, now: float) -> float:
+        return now - self.quaternion_t
 
     @classmethod
     def from_reading(cls, reading, now: Optional[float] = None) -> "Snapshot":
@@ -50,6 +56,8 @@ class Snapshot:
             if getattr(reading, "has_attitude", True)
             else None
         )
+        fields = tuple(getattr(reading, name, None) for name in ("qw", "qx", "qy", "qz"))
+        quaternion = None if any(v is None for v in fields) else tuple(fields)  # type: ignore[arg-type]
         return cls(
             t_mono=t,
             accel=(reading.ax, reading.ay, reading.az),
@@ -58,21 +66,28 @@ class Snapshot:
             attitude_t=reading.t_mono,
             accel_t=reading.t_mono,
             gyro_t=reading.t_mono,
+            quaternion=quaternion,  # type: ignore[arg-type]
+            quaternion_t=reading.t_mono,
         )
 
 
 class TelemetryBuffer:
-    """Merges partial frames (0x51/0x52/0x53) into one consistent view."""
+    """Merges partial frames (0x51/0x52/0x53/0x59) into one consistent view."""
 
-    __slots__ = ("_accel", "_gyro", "_attitude", "_t_accel", "_t_gyro", "_t_att", "_last")
+    __slots__ = (
+        "_accel", "_gyro", "_attitude", "_quaternion",
+        "_t_accel", "_t_gyro", "_t_att", "_t_quat", "_last",
+    )
 
     def __init__(self) -> None:
         self._accel: Optional[Vec3] = None
         self._gyro: Optional[Vec3] = None
         self._attitude: Optional[Vec3] = None
+        self._quaternion: Optional[Quat4] = None
         self._t_accel = 0.0
         self._t_gyro = 0.0
         self._t_att = 0.0
+        self._t_quat = 0.0
         self._last: Optional[ImuSample] = None
 
     @property
@@ -85,6 +100,9 @@ class TelemetryBuffer:
         if sample.has_attitude():
             self._attitude = (sample.roll, sample.pitch, sample.yaw)  # type: ignore[arg-type]
             self._t_att = t
+        if sample.has_quaternion():
+            self._quaternion = (sample.qw, sample.qx, sample.qy, sample.qz)  # type: ignore[arg-type]
+            self._t_quat = t
         if sample.ax is not None and sample.ay is not None and sample.az is not None:
             self._accel = (sample.ax, sample.ay, sample.az)
             self._t_accel = t
@@ -101,6 +119,8 @@ class TelemetryBuffer:
             attitude_t=self._t_att,
             accel_t=self._t_accel,
             gyro_t=self._t_gyro,
+            quaternion=self._quaternion,
+            quaternion_t=self._t_quat,
         )
 
     def reset(self) -> None:
@@ -109,9 +129,11 @@ class TelemetryBuffer:
         self._accel = None
         self._gyro = None
         self._attitude = None
+        self._quaternion = None
         self._t_accel = 0.0
         self._t_gyro = 0.0
         self._t_att = 0.0
+        self._t_quat = 0.0
 
 
 def norm(v: Optional[Vec3]) -> Optional[float]:

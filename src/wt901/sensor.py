@@ -140,6 +140,27 @@ class ImuReading:
     gz: float
     temp_c: Optional[float] = None
     has_attitude: bool = True  # False when the device sends no angle frames
+    # Device quaternion in the sensor frame, Hamilton (w, x, y, z).  ``None``
+    # when the device only reports Euler angles (0x61/0x53).
+    qw: Optional[float] = None
+    qx: Optional[float] = None
+    qy: Optional[float] = None
+    qz: Optional[float] = None
+
+    @property
+    def has_quaternion(self) -> bool:
+        return (
+            self.qw is not None
+            and self.qx is not None
+            and self.qy is not None
+            and self.qz is not None
+        )
+
+    @property
+    def quaternion(self) -> Optional[Tuple[float, float, float, float]]:
+        if not self.has_quaternion:
+            return None
+        return (self.qw, self.qx, self.qy, self.qz)  # type: ignore[return-value]
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -149,6 +170,10 @@ class ImuReading:
             "roll": round(self.roll, 3),
             "pitch": round(self.pitch, 3),
             "yaw": round(self.yaw, 3),
+            "quaternion": (
+                None if not self.has_quaternion
+                else [round(v, 6) for v in self.quaternion]  # type: ignore[union-attr]
+            ),
             "ax": round(self.ax, 4),
             "ay": round(self.ay, 4),
             "az": round(self.az, 4),
@@ -157,17 +182,21 @@ class ImuReading:
             "gz": round(self.gz, 3),
             "temp_c": None if self.temp_c is None else round(self.temp_c, 2),
             "has_attitude": self.has_attitude,
+            "has_quaternion": self.has_quaternion,
         }
 
     def to_json(self) -> str:
         return json.dumps(self.as_dict(), ensure_ascii=False)
 
     def __str__(self) -> str:
-        return (
+        base = (
             f"roll={self.roll:7.2f} pitch={self.pitch:7.2f} yaw={self.yaw:7.2f} | "
             f"a=({self.ax:5.2f},{self.ay:5.2f},{self.az:5.2f})g "
             f"w=({self.gx:7.2f},{self.gy:7.2f},{self.gz:7.2f})dps"
         )
+        if self.has_quaternion:
+            base += f" | q=({self.qw:+.4f},{self.qx:+.4f},{self.qy:+.4f},{self.qz:+.4f})"
+        return base
 
 
 @dataclass(slots=True, frozen=True)
@@ -222,6 +251,7 @@ class AsyncWT901:
         self._state = LinkState.DISCONNECTED
         self._latest: Optional[ImuReading] = None
         self._frames = 0
+        self._published = 0
         self._reconnects = 0
         self._rate_marks: Deque[float] = deque(maxlen=400)
 
@@ -328,6 +358,33 @@ class AsyncWT901:
         return callback
 
     # ------------------------------------------------------------- calibration
+    async def send_register(self, register: int, value: int = 0) -> None:
+        """Write one WitMotion ``FF AA`` register (explicit user action only)."""
+
+        from .ble import wit_frame
+
+        sender = getattr(self._transport, "send", None)
+        if sender is None:
+            raise WT901Error("this transport does not support register writes")
+        await sender(wit_frame(register, value))
+
+    async def set_output_rate(self, hz: int, *, save: bool = False) -> None:
+        """Set the device data rate.
+
+        Lower rates reduce BLE traffic but add sampling latency (10 Hz = 100 ms
+        period).  Higher rates help only after the host consumer can keep up;
+        see docs/09-延迟分析与优化.md.
+        """
+
+        codes = {10: 0x06, 20: 0x07, 50: 0x08, 100: 0x09, 200: 0x0A}
+        if hz not in codes:
+            raise ValueError(f"unsupported rate {hz}; choose one of {sorted(codes)}")
+        await self.send_register(0x03, codes[hz])
+        if save:
+            # Give the module a moment to apply the rate before persisting it.
+            await asyncio.sleep(0.05)
+            await self.send_register(0x00, 0x0000)
+
     @property
     def gyro_bias(self) -> Tuple[float, float, float]:
         return self._gyro_bias
@@ -492,22 +549,24 @@ class AsyncWT901:
     def _should_emit(self, sample: ImuSample) -> bool:
         if self.config.emit_on == "any":
             return True
-        return sample.has_attitude()
+        return sample.has_attitude() or sample.has_quaternion()
 
     def _publish(self, now: float) -> None:
         snap = self._buffer.snapshot(now)
-        if snap.attitude is None and self.config.emit_on != "any":
+        if snap.attitude is None and snap.quaternion is None and self.config.emit_on != "any":
             return
         attitude = snap.attitude if snap.attitude is not None else (0.0, 0.0, 0.0)
         accel = snap.accel or (0.0, 0.0, 0.0)
         gyro = snap.gyro or (0.0, 0.0, 0.0)
+        quaternion = snap.quaternion or (None, None, None, None)
         ox, oy, oz = self._angle_offset
         bx, by, bz = self._gyro_bias
+        self._published += 1
 
         reading = ImuReading(
             t_mono=now,
             t_wall=time.time(),
-            seq=self._frames,
+            seq=self._published,
             roll=attitude[0] - ox,
             pitch=attitude[1] - oy,
             yaw=attitude[2] - oz,
@@ -519,6 +578,10 @@ class AsyncWT901:
             gz=gyro[2] - bz,
             temp_c=self._buffer.last_sample.temp_c if self._buffer.last_sample else None,
             has_attitude=snap.attitude is not None,
+            qw=quaternion[0],
+            qx=quaternion[1],
+            qy=quaternion[2],
+            qz=quaternion[3],
         )
         self._latest = reading
         self._rate_marks.append(now)
@@ -703,6 +766,11 @@ class WT901:
         if self._sensor is None:
             raise NotStartedError("sensor is not running; call start() first")
         return self._call(self._sensor.zero_here(include_yaw=include_yaw), timeout=15.0)
+
+    def set_output_rate(self, hz: int, *, save: bool = False) -> None:
+        if self._sensor is None:
+            raise NotStartedError("sensor is not running; call start() first")
+        self._call(self._sensor.set_output_rate(hz, save=save), timeout=10.0)
 
     def save_calibration(self, path: str) -> None:
         if self._sensor is None:

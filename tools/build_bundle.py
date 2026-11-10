@@ -10,13 +10,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-VERSION = "0.3.0"
+VERSION = "0.5.1"
 PREFIX = f"wt901-control-{VERSION}"
 
 INCLUDE_GLOBS = [
     "src/**/*.py",
     "src/wt901/py.typed",
     "examples/*.py",
+    "examples/*.stl",
+    "examples/*.md",
+    "config/*.json",
+    "examples/*.glb",
     "tools/*.py",
     "tests/*.py",
     "docs/**/*.md",
@@ -80,6 +84,8 @@ DELIVERY_README = f"""# 交付说明 · wt901-control {VERSION}
 ```powershell
 python -m pip install "wt901_control-{VERSION}-py3-none-any.whl[ble]"
 python -m pip install PySide6          # 仅在需要图形界面时
+python -m pip install cascadio         # 仅在需要导入 STEP/STP 模型时
+python -m pip install trimesh          # 仅在需要导入 glTF/GLB 模型时
 ```
 
 已验证：干净虚拟环境安装后 `wt901 --version` 输出 `wt901-control {VERSION}`，

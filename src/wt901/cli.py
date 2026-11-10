@@ -2,6 +2,7 @@
 
     wt901 probe                 enumerate GATT, capture and diagnose the format
     wt901 scan                  list nearby BLE devices
+    wt901 rate --hz 50          set the device output rate (latency tuning)
     wt901 run  --name WT901     live acquisition + control
     wt901 sim                   same pipeline, simulated sensor, no hardware
     wt901 analyze --file x.hex  re-parse a captured log (bring-up debugging)
@@ -177,6 +178,26 @@ async def cmd_probe(args) -> int:
     return 0 if (report.analysis and report.analysis.frames_ok) else 2
 
 
+async def cmd_rate(args) -> int:
+    """Set the device output rate; the BLE link stays up for the write."""
+
+    from .sensor import AsyncWT901, WT901Config
+
+    _require_bleak()
+    cfg = WT901Config(
+        address=args.address,
+        name_contains=args.name,
+        notify_uuid=None,
+        connect_timeout_s=args.connect_timeout,
+    )
+    print(f"connecting to set output rate to {args.hz} Hz ...", flush=True)
+    async with AsyncWT901(cfg) as imu:
+        await imu.set_output_rate(args.hz, save=args.save)
+    suffix = " (saved)" if args.save else " (runtime only; use --save to persist)"
+    print(f"output rate request sent: {args.hz} Hz{suffix}")
+    return 0
+
+
 async def cmd_analyze(args) -> int:
     data = _load_bytes(args)
     if not data:
@@ -316,6 +337,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--save", default=None, metavar="PATH.bin", help="write the captured bytes")
     sp.add_argument("--json", action="store_true", help="also print the report as JSON")
     sp.set_defaults(func=cmd_probe)
+
+    sp = sub.add_parser("rate", help="set the device output rate (10/20/50/100/200 Hz)")
+    sp.add_argument("--address", default=None, help="BLE address from `wt901 scan`")
+    sp.add_argument("--name", default="WT901", help="name substring, default WT901")
+    sp.add_argument("--notify-uuid", default=None, help="pin the data characteristic if ambiguous")
+    sp.add_argument("--hz", type=int, default=50, choices=(10, 20, 50, 100, 200))
+    sp.add_argument("--save", action="store_true", help="persist the setting in the device")
+    sp.add_argument("--connect-timeout", type=float, default=25.0)
+    sp.set_defaults(func=cmd_rate)
 
     sp = sub.add_parser("run", help="connect, decode and control")
     sp.add_argument("--address", default=None, help="BLE address from `wt901 scan`")

@@ -16,7 +16,7 @@ from wt901 import (
     WT901Config,
 )
 from wt901.errors import NotStartedError
-from wt901.protocol import encode_combined, encode_split
+from wt901.protocol import encode_combined, encode_quaternion, encode_split
 
 
 class FakeTransport:
@@ -29,6 +29,7 @@ class FakeTransport:
         self.runs = 0
         self.device = None
         self.notify_uuid = "fake-notify"
+        self.sent = []
 
     async def run(self, on_bytes) -> None:
         self.runs += 1
@@ -39,6 +40,9 @@ class FakeTransport:
                 raise ConnectionError("fake link drop")
             on_bytes(self.payload)
             await asyncio.sleep(period)
+
+    async def send(self, data: bytes) -> None:
+        self.sent.append(data)
 
     async def close(self) -> None:
         return None
@@ -132,6 +136,15 @@ class TestAsync(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.15)
             self.assertAlmostEqual(imu.latest.gx, 0.0, delta=0.3)
             self.assertAlmostEqual(imu.latest.gy, 0.0, delta=0.3)
+
+    async def test_set_output_rate_writes_register(self) -> None:
+        from wt901.ble import wit_frame
+
+        transport = FakeTransport(payload())
+        async with AsyncWT901(config(transport)) as imu:
+            await imu.set_output_rate(50, save=True)
+        self.assertEqual(transport.sent[0], wit_frame(0x03, 0x08))
+        self.assertEqual(transport.sent[1], wit_frame(0x00, 0x0000))
 
     async def test_zero_here(self) -> None:
         cfg = config(FakeTransport(payload(roll=3.0, pitch=20.0)))
@@ -235,6 +248,75 @@ class TestConfigValidation(unittest.TestCase):
             AsyncWT901(WT901Config(name_contains="", address=None))
         with self.assertRaises(ConfigError):
             WT901(WT901Config(name_contains="", address=None))
+
+
+class TestQuaternionPipeline(unittest.IsolatedAsyncioTestCase):
+    async def test_quaternion_only_stream_publishes_pose(self) -> None:
+        cfg = config(FakeTransport(encode_quaternion(0.5, -0.5, 0.25, -0.25), hz=50.0))
+        async with AsyncWT901(cfg) as imu:
+            reading = await imu.read(timeout=2.0)
+            self.assertTrue(reading.has_quaternion)
+            self.assertFalse(reading.has_attitude)
+            self.assertAlmostEqual(reading.qw, 0.5, places=5)
+            self.assertAlmostEqual(reading.qx, -0.5, places=5)
+            self.assertAlmostEqual(reading.qy, 0.25, places=5)
+            self.assertAlmostEqual(reading.qz, -0.25, places=5)
+            self.assertEqual(
+                tuple(round(v, 5) for v in reading.quaternion),
+                (0.5, -0.5, 0.25, -0.25),
+            )
+            self.assertTrue(reading.as_dict()["has_quaternion"])
+
+
+class TestStateQuaternion(unittest.TestCase):
+    def test_buffer_merges_quaternion_frames(self) -> None:
+        from wt901.model import ImuSample
+        from wt901.state import TelemetryBuffer
+
+        buf = TelemetryBuffer()
+        buf.update(
+            ImuSample(
+                kind="quaternion",
+                t_mono=1.0,
+                qw=0.5,
+                qx=-0.5,
+                qy=0.25,
+                qz=-0.25,
+            )
+        )
+        snap = buf.snapshot(2.0)
+        self.assertEqual(snap.quaternion, (0.5, -0.5, 0.25, -0.25))
+        self.assertAlmostEqual(snap.age_quaternion(2.0), 1.0)
+        self.assertIsNone(snap.attitude)
+
+    def test_snapshot_from_reading_carries_quaternion(self) -> None:
+        import time
+
+        from wt901.sensor import ImuReading
+        from wt901.state import Snapshot
+
+        reading = ImuReading(
+            t_mono=time.monotonic(),
+            t_wall=time.time(),
+            seq=1,
+            roll=0.0,
+            pitch=0.0,
+            yaw=0.0,
+            ax=0.0,
+            ay=0.0,
+            az=1.0,
+            gx=0.0,
+            gy=0.0,
+            gz=0.0,
+            has_attitude=False,
+            qw=0.5,
+            qx=-0.5,
+            qy=0.25,
+            qz=-0.25,
+        )
+        snap = Snapshot.from_reading(reading)
+        self.assertEqual(snap.quaternion, (0.5, -0.5, 0.25, -0.25))
+        self.assertIsNone(snap.attitude)
 
 
 if __name__ == "__main__":

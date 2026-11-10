@@ -18,57 +18,7 @@ def color_for_deviation(deg: float) -> str:
     return theme.BAD
 
 
-class DeviationReadout(QWidget):
-    """The number the operator actually looks at."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._deg = 0.0
-        self._stale = False
-        self.setMinimumHeight(132)
-
-    def set_value(self, deviation_deg: float, stale: bool = False) -> None:
-        self._deg = deviation_deg
-        self._stale = stale
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-
-        p.setPen(QPen(QColor(theme.BORDER), 1))
-        p.setBrush(QColor(theme.PANEL))
-        p.drawRoundedRect(rect, 10, 10)
-
-        color = QColor(theme.DIM if self._stale else color_for_deviation(self._deg))
-        p.setPen(QPen(QColor(theme.MUTED)))
-        f = QFont(theme.FONT_UI, 11)
-        f.setLetterSpacing(QFont.AbsoluteSpacing, 1)
-        p.setFont(f)
-        p.drawText(rect.adjusted(18, 12, -18, 0), Qt.AlignLeft | Qt.AlignTop, "与计划偏差")
-
-        p.setPen(QPen(color))
-        f = QFont(theme.FONT_MONO, 44)
-        f.setBold(True)
-        p.setFont(f)
-        p.drawText(rect.adjusted(0, 18, -46, 8), Qt.AlignCenter, f"{self._deg:.1f}")
-
-        f = QFont(theme.FONT_UI, 18)
-        p.setFont(f)
-        p.drawText(rect.adjusted(52, 24, -18, 6), Qt.AlignCenter, "°")
-
-        p.setPen(QPen(QColor(theme.DIM if self._stale else theme.MUTED)))
-        f = QFont(theme.FONT_UI, 10)
-        p.setFont(f)
-        p.drawText(
-            rect.adjusted(0, 0, 0, -12),
-            Qt.AlignHCenter | Qt.AlignBottom,
-            "— 无数据 —" if self._stale else _quality_text(self._deg),
-        )
-
-
-def _quality_text(deg: float) -> str:
+def quality_text(deg: float) -> str:
     if deg < 2.0:
         return "对准良好"
     if deg < 5.0:

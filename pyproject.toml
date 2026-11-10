@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wt901-control"
-version = "0.3.0"
+version = "0.5.1"
 description = "SDK for WitMotion BLE IMUs (WT901BLE67 / WT9011DCL-BT50): acquisition, decoding, needle-angle GUI"
 requires-python = ">=3.10"
 dependencies = []
@@ -12,6 +12,8 @@ dependencies = []
 [project.optional-dependencies]
 ble = ["bleak>=0.22"]
 gui = ["PySide6>=6.5"]
+step = ["cascadio>=0.1"]
+gltf = ["trimesh>=4"]
 serial = ["pyserial>=3.5"]
 dev = ["pytest>=7"]
 

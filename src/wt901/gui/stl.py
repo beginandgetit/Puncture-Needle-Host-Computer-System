@@ -9,6 +9,7 @@ it.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,7 +74,7 @@ class StlMesh:
 
         if self.triangle_count <= max_triangles:
             return self
-        step = max(1, self.triangle_count // max_triangles)
+        step = max(1, math.ceil(self.triangle_count / max_triangles))
         tris = self.triangles[::step]
         used = sorted({i for tri in tris for i in tri})
         remap = {old: new for new, old in enumerate(used)}
