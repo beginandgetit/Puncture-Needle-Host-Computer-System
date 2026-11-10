@@ -37,6 +37,9 @@ class NeedleView(QWidget):
         self._base = None
         self._model_axis = None
         self._model_hub = None
+        self._model_tip = None
+        self._model_pivot = None
+        self._pivot_mode = "hub"
         self._model_rotation = None
         self._model_compact = None
         self._base_compact = None
@@ -80,19 +83,57 @@ class NeedleView(QWidget):
             self._stale = stale
             self.update()
 
-    def set_model(self, mesh, axis=None, hub=None) -> None:
+    def set_model(
+        self,
+        mesh,
+        axis=None,
+        hub=None,
+        tip=None,
+        pivot=None,
+        pivot_mode: str = "hub",
+    ) -> None:
         """Needle/object model.
 
-        ``axis``/``hub`` describe the needle axis and the rotation centre in the
-        model's own coordinates (CAD mode).  When omitted the legacy behaviour is
-        used: the mesh is assumed centred and its needle to point down -Z.
+        ``axis``/``hub``/``tip`` are in the model's own coordinates.  The model
+        rotates about ``hub`` or ``tip`` depending on ``pivot_mode``; ``pivot``
+        overrides both for callers that already computed the point.  When all
+        are omitted, the legacy behaviour is used: the mesh is centred and
+        points down -Z.
         """
 
         self._model = mesh
         self._model_compact = mesh.simplified(600) if (mesh is not None and self._compact) else mesh
         self._model_axis = tuple(axis) if axis is not None else None
         self._model_hub = tuple(hub) if hub is not None else None
+        self._model_tip = tuple(tip) if tip is not None else None
+        self._pivot_mode = pivot_mode
+        self._model_pivot = (
+            tuple(pivot)
+            if pivot is not None
+            else self.pivot_for_mode(pivot_mode)
+        )
         self._model_rotation = None
+        self.update()
+
+    def pivot_for_mode(self, mode: str):
+        """Model-space pivot for ``hub`` or ``tip`` mode."""
+
+        if mode == "tip" and self._model_tip is not None:
+            return self._model_tip
+        return self._model_hub
+
+    def set_pivot_mode(self, mode: str) -> None:
+        """Switch the rotation centre between the hub and the needle tip."""
+
+        self._pivot_mode = mode
+        self._model_pivot = self.pivot_for_mode(mode)
+        self.update()
+
+    def set_pivot(self, pivot, *, mode: str = "hub") -> None:
+        """Set an explicit model-space rotation centre."""
+
+        self._model_pivot = tuple(pivot)
+        self._pivot_mode = mode
         self.update()
 
     def set_base(self, mesh) -> None:
@@ -128,7 +169,8 @@ class NeedleView(QWidget):
             meshes.append(self._base)
         meshes = [m for m in meshes if m is not None]
         if not meshes:
-            self._target = (0.0, 0.0, -NEEDLE_LENGTH_MM / 2.0)
+            sign = 1.0 if self._pivot_mode == "tip" else -1.0
+            self._target = (0.0, 0.0, sign * NEEDLE_LENGTH_MM / 2.0)
             self.set_distance(2.2 * NEEDLE_LENGTH_MM + 80.0)
             return
 
@@ -137,9 +179,13 @@ class NeedleView(QWidget):
         lo = tuple(min(v[i] for v in lows) for i in range(3))
         hi = tuple(max(v[i] for v in highs) for i in range(3))
 
-        if self._model is not None and self._model_axis is not None and self._model_hub is not None:
+        if (
+            self._model is not None
+            and self._model_axis is not None
+            and self._model_pivot is not None
+        ):
             q = self._model_rotation or Quaternion.from_two_vectors(self._model_axis, self._axis)
-            hub = self._model_hub
+            hub = self._model_pivot
             corners = [
                 (x, y, z)
                 for x in (lo[0], hi[0])
@@ -207,10 +253,10 @@ class NeedleView(QWidget):
         # shortest-arc path is only a fallback before the first pose arrives.
         if self._model_rotation is not None:
             model_rotation = self._model_rotation
-            pivot = self._model_hub or (0.0, 0.0, 0.0)
+            pivot = self._model_pivot or self._model_hub or (0.0, 0.0, 0.0)
         elif self._model_axis is not None and self._model_hub is not None:
             model_rotation = Quaternion.from_two_vectors(self._model_axis, self._axis)
-            pivot = self._model_hub
+            pivot = self._model_pivot or self._model_hub
         else:
             model_rotation = Quaternion.from_two_vectors(DOWN, self._axis)
             pivot = (0.0, 0.0, 0.0)
@@ -380,7 +426,7 @@ class NeedleView(QWidget):
         a = self._project(base, w, h)
 
         if self._model is not None:
-            # The imported STL *is* the needle; just mark the entry point.
+            # The imported STL *is* the needle; mark the rotation centre.
             color = QColor(theme.DIM if self._stale else _color_for(self._deviation))
             entry = QRadialGradient(QPointF(a[0], a[1]), 9)
             entry.setColorAt(0.0, QColor(255, 255, 255, 220))
@@ -390,7 +436,10 @@ class NeedleView(QWidget):
             p.drawEllipse(QPointF(a[0], a[1]), 6.0, 6.0)
             return
 
-        tip3 = _scale(self._axis, NEEDLE_LENGTH_MM)
+        # Hub mode: hub at the origin and the needle extends along +axis.
+        # Tip mode: tip at the origin and the body extends along -axis.
+        direction = -1.0 if self._pivot_mode == "tip" else 1.0
+        tip3 = _scale(self._axis, direction * NEEDLE_LENGTH_MM)
         b = self._project(tip3, w, h)
 
         color = QColor(theme.DIM if self._stale else _color_for(self._deviation))

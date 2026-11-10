@@ -303,6 +303,25 @@ def tip_position(entry: Vec3, r: Mat3, depth_mm: float) -> Vec3:
     return v_add(entry, v_scale(needle_axis(r), depth_mm))
 
 
+def rotate_about(
+    point: Vec3,
+    rotation: "Quaternion",
+    pivot: Vec3,
+    anchor: Vec3 = (0.0, 0.0, 0.0),
+) -> Vec3:
+    """Rigid rotation about a model-space pivot.
+
+    ``p' = anchor + R(q) * (p - pivot)``
+
+    This is the coordinate transform used by the renderer for both pivot modes:
+    subtract the chosen pivot, rotate, then place the pivot at ``anchor``
+    (normally the display origin).  Changing ``pivot`` from hub to tip therefore
+    changes only the translation term, not the tracked relative rotation.
+    """
+
+    return v_add(anchor, rotation.rotate(v_sub(point, pivot)))
+
+
 def elevation_azimuth_deg(axis: Vec3) -> Tuple[float, float]:
     """Elevation above the horizontal plane and azimuth from +X, in degrees."""
 

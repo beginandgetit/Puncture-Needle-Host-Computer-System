@@ -48,11 +48,37 @@ class TestRigConfig(unittest.TestCase):
             cad_mode=False,
             model_right=(0.0, 0.0, 1.0),
             invert_quaternion=True,
+            pivot_mode="tip",
         )
         path = Path(tempfile.mkdtemp()) / "rig.json"
         rig.save(path)
         self.assertTrue(path.exists())
         self.assertEqual(Rig.load(path), rig)
+
+    def test_invalid_pivot_mode_falls_back_to_hub(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "rig.json"
+        path.write_text(json.dumps({"pivot_mode": "somewhere"}), encoding="utf-8")
+        self.assertEqual(Rig.load(path).pivot_mode, "hub")
+
+
+class TestPivotGeometry(unittest.TestCase):
+    def test_tip_is_hub_plus_axis_times_length(self) -> None:
+        rig = Rig()
+        expected = v_add(rig.hub_mm, v_scale(rig.model_axis, rig.needle_length_mm))
+        self.assertTrue(_near(rig.tip_mm, expected, 1e-9))
+
+    def test_pivot_modes(self) -> None:
+        rig = Rig()
+        self.assertTrue(_near(rig.pivot_mm("hub"), rig.hub_mm))
+        self.assertTrue(_near(rig.pivot_mm("tip"), rig.tip_mm))
+        self.assertTrue(_near(rig.pivot_mm(), rig.hub_mm))
+        self.assertTrue(_near(Rig(pivot_mode="tip").pivot_mm(), rig.tip_mm))
+
+    def test_tip_pivot_moves_hub_above_origin(self) -> None:
+        rig = Rig()
+        q = rig.model_placement()          # model -> display, needle down
+        hub_d = q.rotate(tuple(rig.hub_mm[i] - rig.tip_mm[i] for i in range(3)))
+        self.assertTrue(_near(hub_d, (0.0, 0.0, LEN), 1e-6), hub_d)
 
 
 class TestModelAlignment(unittest.TestCase):

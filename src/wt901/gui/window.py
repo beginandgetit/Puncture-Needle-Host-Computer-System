@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self._config = config
         self._simulated = simulated
         self._rig = Rig.load()
+        self._pivot_mode = self._rig.pivot_mode
         self._tracker = NeedleTracker(
             needle_axis_sensor=self._rig.needle_axis_sensor,
             # 60 ms smoothing is a direct 60 ms lag; 20 ms only removes the
@@ -307,6 +308,22 @@ class MainWindow(QMainWindow):
         options.addStretch(1)
         right.addLayout(options)
 
+        pivot_row = QHBoxLayout()
+        pivot_label = QLabel("旋转中心")
+        pivot_label.setStyleSheet(f"color:{theme.MUTED};")
+        self._cmb_pivot = QComboBox()
+        self._cmb_pivot.addItem("针座 (hub)", "hub")
+        self._cmb_pivot.addItem("针尖 (tip)", "tip")
+        index = self._cmb_pivot.findData(self._pivot_mode)
+        self._cmb_pivot.setCurrentIndex(max(0, index))
+        self._cmb_pivot.setToolTip(
+            "hub：模型围绕针座旋转；tip：围绕针尖旋转（针尖位于显示原点）"
+        )
+        self._cmb_pivot.currentIndexChanged.connect(self._on_pivot_changed)
+        pivot_row.addWidget(pivot_label)
+        pivot_row.addWidget(self._cmb_pivot, 1)
+        right.addLayout(pivot_row)
+
         body.addWidget(panel)
         root.addLayout(body, 1)
 
@@ -317,8 +334,7 @@ class MainWindow(QMainWindow):
 
         self._log("程序启动" + ("（模拟模式）" if self._simulated else ""))
         self._set_main_view("top")
-        for view in self._views():
-            view.fit_distance()
+        self._apply_pivot()
 
     def _small_title(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -585,6 +601,25 @@ class MainWindow(QMainWindow):
     def _on_cad_toggled(self, checked: bool) -> None:
         self._log("CAD 坐标模式：" + ("开（按真实坐标摆放）" if checked else "关（居中缩放）"))
 
+    def _on_pivot_changed(self, index: int) -> None:
+        mode = self._cmb_pivot.itemData(index) or "hub"
+        self._pivot_mode = mode
+        self._rig = replace(self._rig, pivot_mode=mode)
+        try:
+            self._rig.save()
+        except OSError as exc:
+            self._log(f"保存旋转中心设置失败：{exc}")
+        self._apply_pivot()
+        label = "针尖" if mode == "tip" else "针座"
+        self._log(f"旋转中心切换为：{label}")
+
+    def _apply_pivot(self) -> None:
+        """Re-apply the current pivot to every view and reframe the camera."""
+
+        for view in self._views():
+            view.set_pivot_mode(self._pivot_mode)
+            view.fit_distance()
+
     def _on_pause_toggled(self, checked: bool) -> None:
         self._paused = checked
         self._chk_pause.setText("继续数据" if checked else "暂停数据")
@@ -649,29 +684,51 @@ class MainWindow(QMainWindow):
             mesh = mesh.simplified(MODEL_MAX_FACES)
             self._model_mesh = mesh
             self._tracker.set_model(self._rig.model_axis, self._rig.model_right)
+            tip = self._rig.tip_mm
             for view in self._views():
-                view.set_model(mesh, axis=self._rig.model_axis, hub=self._rig.hub_mm)
+                view.set_model(
+                    mesh,
+                    axis=self._rig.model_axis,
+                    hub=self._rig.hub_mm,
+                    tip=tip,
+                    pivot_mode=self._pivot_mode,
+                )
                 view.fit_distance()
             axis = self._rig.model_axis
             hub = self._rig.hub_mm
+            pivot = self._rig.pivot_mm(self._pivot_mode)
+            pivot_label = "针尖" if self._pivot_mode == "tip" else "针座"
             self._log(
                 f"已按 CAD 坐标导入 {mesh.name}：{mesh.triangle_count} 面，"
                 f"原始 {original[0]:.1f}×{original[1]:.1f}×{original[2]:.1f} mm，"
                 f"针轴 ({axis[0]:g},{axis[1]:g},{axis[2]:g})，"
-                f"针座 ({hub[0]:g},{hub[1]:g},{hub[2]:g}) mm"
+                f"针座 ({hub[0]:g},{hub[1]:g},{hub[2]:g}) mm，"
+                f"旋转中心 {pivot_label} ({pivot[0]:g},{pivot[1]:g},{pivot[2]:g}) mm"
             )
         else:
             mesh = mesh.simplified(MODEL_MAX_FACES).centered(target_max_mm=MODEL_TARGET_MM)
             self._model_mesh = mesh
-            # Centred demo meshes are assumed to point down -Z.
+            # Centred demo meshes are assumed to point down -Z.  Derive the
+            # hub/tip from the bounding box so tip-pivot mode is meaningful.
+            low, high = mesh.bounds()
+            hub = (0.0, 0.0, high[2])
+            tip = (0.0, 0.0, low[2])
             self._tracker.set_model((0.0, 0.0, -1.0), (1.0, 0.0, 0.0))
             for view in self._views():
-                view.set_model(mesh)
+                view.set_model(
+                    mesh,
+                    axis=(0.0, 0.0, -1.0),
+                    hub=hub,
+                    tip=tip,
+                    pivot_mode=self._pivot_mode,
+                )
                 view.fit_distance()
+            pivot = tip if self._pivot_mode == "tip" else hub
+            pivot_label = "针尖" if self._pivot_mode == "tip" else "针座"
             self._log(
                 f"已导入模型 {mesh.name}：{mesh.triangle_count} 面，"
                 f"原始 {original[0]:.1f}×{original[1]:.1f}×{original[2]:.1f} mm，"
-                f"原点置于模型中心"
+                f"旋转中心 {pivot_label} ({pivot[0]:g},{pivot[1]:g},{pivot[2]:g}) mm"
             )
 
     def import_base(self) -> None:

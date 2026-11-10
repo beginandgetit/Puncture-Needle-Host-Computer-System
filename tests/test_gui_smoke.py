@@ -293,3 +293,56 @@ class TestLatestWins(unittest.TestCase):
             self.assertIsNotNone(window._pose)
         finally:
             window.shutdown()
+
+@unittest.skipIf(QApplication is None, "PySide6 not installed")
+class TestTipPivot(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+        from wt901.gui import _prepare_fonts
+
+        _prepare_fonts()
+
+    def test_scene_pivot_switches_between_hub_and_tip(self) -> None:
+        from wt901.gui.scene import NeedleView
+        from wt901.gui.stl import load_stl
+
+        view = NeedleView()
+        mesh = load_stl("examples/needle_demo.stl")
+        hub = (0.0, 0.0, 0.0)
+        tip = (0.0, 0.0, -150.0)
+        view.set_model(mesh, axis=(0, 0, -1), hub=hub, tip=tip, pivot_mode="hub")
+        self.assertEqual(view._model_pivot, hub)
+        view.set_pivot_mode("tip")
+        self.assertEqual(view._model_pivot, tip)
+        self.assertEqual(view._pivot_mode, "tip")
+        view.set_pivot_mode("hub")
+        self.assertEqual(view._model_pivot, hub)
+
+    def test_window_pivot_selector_updates_all_views(self) -> None:
+        from unittest.mock import patch
+
+        from wt901 import WT901Config
+        from wt901.gui.window import MainWindow
+        from wt901.rig import Rig
+
+        window = MainWindow(
+            WT901Config(transport=object(), name_contains=""),
+            simulated=True,
+            autostart=False,
+        )
+        try:
+            with patch.object(Rig, "save", return_value=None):
+                window._cmb_pivot.setCurrentIndex(window._cmb_pivot.findData("tip"))
+            self.assertEqual(window._pivot_mode, "tip")
+            self.assertEqual(window._rig.pivot_mode, "tip")
+            for view in window._views():
+                self.assertEqual(view._pivot_mode, "tip")
+
+            with patch.object(Rig, "save", return_value=None):
+                window._cmb_pivot.setCurrentIndex(window._cmb_pivot.findData("hub"))
+            self.assertEqual(window._pivot_mode, "hub")
+            for view in window._views():
+                self.assertEqual(view._pivot_mode, "hub")
+        finally:
+            window.shutdown()

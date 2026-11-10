@@ -21,7 +21,11 @@
 ``needle_length_mm``
     针长，用于针尖推算与显示长度参考。
 ``cad_mode``
-    True 时导入的模型按真实 CAD 坐标摆放（不居中、不缩放），并以 ``hub_mm`` 为旋转中心。
+    True 时导入的模型按真实 CAD 坐标摆放（不居中、不缩放），并以 ``pivot_mode`` 指定的点
+    为旋转中心。
+``pivot_mode``
+    旋转中心：``"hub"`` = 针座（默认），``"tip"`` = 针尖。
+    针尖坐标 = ``hub_mm + model_axis * needle_length_mm``。
 ``invert_quaternion``
     True 表示设备四元数是「世界 → 传感器」。正常维特输出是「传感器 → 世界」，
     默认 False。实物上表现为：针往右倾、界面往左倾时，把它打开。
@@ -32,11 +36,16 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Optional
 
 from .mapping import canonical_placement
-from .pose import Quaternion, Vec3, v_add, v_scale, v_sub
+from .pose import Quaternion, Vec3, v_add, v_normalize, v_scale, v_sub
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "rig.json"
+
+PIVOT_HUB = "hub"
+PIVOT_TIP = "tip"
+PIVOT_MODES = (PIVOT_HUB, PIVOT_TIP)
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,8 @@ class Rig:
     needle_length_mm: float = 176.35
     # 导入模型是否按 CAD 真实坐标摆放
     cad_mode: bool = True
+    # 旋转中心：hub = 针座，tip = 针尖（界面可切换）
+    pivot_mode: str = PIVOT_HUB
     # 设备欧拉角顺序（维特默认 ZYX）
     euler_order: str = "ZYX"
     # 设备四元数是否为「世界 → 传感器」
@@ -89,11 +100,28 @@ class Rig:
             hub_mm=tuple(float(v) for v in data.get("hub_mm", cls.hub_mm)),
             needle_length_mm=float(data.get("needle_length_mm", cls.needle_length_mm)),
             cad_mode=bool(data.get("cad_mode", cls.cad_mode)),
+            pivot_mode=(
+                str(data.get("pivot_mode", cls.pivot_mode))
+                if str(data.get("pivot_mode", cls.pivot_mode)) in PIVOT_MODES
+                else PIVOT_HUB
+            ),
             euler_order=str(data.get("euler_order", cls.euler_order)),
             invert_quaternion=bool(data.get("invert_quaternion", cls.invert_quaternion)),
         )
 
     # ------------------------------------------------------------- geometry
+    @property
+    def tip_mm(self) -> Vec3:
+        """Needle tip in model coordinates: hub + axis * length."""
+
+        return v_add(self.hub_mm, v_scale(v_normalize(self.model_axis), self.needle_length_mm))
+
+    def pivot_mm(self, mode: Optional[str] = None) -> Vec3:
+        """Rotation centre in model coordinates for ``mode`` (hub / tip)."""
+
+        selected = self.pivot_mode if mode is None else mode
+        return self.tip_mm if selected == PIVOT_TIP else self.hub_mm
+
     def model_placement(self) -> Quaternion:
         """Fixed model -> display placement at the reference pose."""
 
@@ -124,7 +152,6 @@ def align_model_point(v: Vec3, model_axis: Vec3, hub: Vec3, display_axis: Vec3) 
 
 
 def tip_position_display(rig: Rig, display_axis: Vec3) -> Vec3:
-    """Where the needle tip ends up in the display frame."""
+    """Where the needle tip ends up in the display frame (hub pivot)."""
 
-    tip_model = v_add(rig.hub_mm, v_scale(rig.model_axis, rig.needle_length_mm))
-    return align_model_point(tip_model, rig.model_axis, rig.hub_mm, display_axis)
+    return align_model_point(rig.tip_mm, rig.model_axis, rig.hub_mm, display_axis)

@@ -19,6 +19,7 @@ from wt901.pose import (
     needle_axis_in_sensor,
     predicted_tip_error_mm,
     relative_axis,
+    rotate_about,
     rotation_difference_deg,
     tip_from_axis,
     tip_position,
@@ -178,6 +179,33 @@ class TestFrames(unittest.TestCase):
         r1 = IDENTITY
         r2 = Quaternion.from_axis_angle((0, 0, 1), 12.0).to_matrix()
         self.assertAlmostEqual(rotation_difference_deg(r1, r2), 12.0, places=6)
+
+
+class TestPivotTransform(unittest.TestCase):
+    def test_pivot_maps_to_anchor(self) -> None:
+        q = Quaternion.from_euler(12, -25, 40)
+        p = rotate_about((3.0, 4.0, 5.0), q, (3.0, 4.0, 5.0))
+        self.assertTrue(all(close(p[i], 0.0) for i in range(3)), p)
+
+    def test_explicit_anchor(self) -> None:
+        q = Quaternion.from_axis_angle((0, 0, 1), 90.0)
+        p = rotate_about((1.0, 0.0, 0.0), q, (0.0, 0.0, 0.0), anchor=(10.0, 20.0, 0.0))
+        self.assertTrue(all(close(p[i], v) for i, v in enumerate((10.0, 21.0, 0.0))), p)
+
+    def test_pivot_choice_only_changes_translation(self) -> None:
+        q = Quaternion.from_axis_angle((0, 0, 1), 90.0)
+        point = (1.0, 0.0, -10.0)
+        about_hub = rotate_about(point, q, (0.0, 0.0, 0.0))
+        about_tip = rotate_about(point, q, (0.0, 0.0, -10.0))
+        self.assertTrue(
+            all(close(about_hub[i], v) for i, v in enumerate((0.0, 1.0, -10.0))),
+            about_hub,
+        )
+        # Tip mode places the tip at the origin, so the body shifts up by 10 mm.
+        self.assertTrue(
+            all(close(about_tip[i], v) for i, v in enumerate((0.0, 1.0, 0.0))),
+            about_tip,
+        )
 
 
 if __name__ == "__main__":

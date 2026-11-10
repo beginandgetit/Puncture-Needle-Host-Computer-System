@@ -21,6 +21,7 @@
   ],
   "needle_length_mm": 176.35,
   "cad_mode": true,
+  "pivot_mode": "hub",
   "euler_order": "ZYX",
   "invert_quaternion": false
 }

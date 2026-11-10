@@ -13,7 +13,7 @@ Lower-level building blocks (parser, controller, sinks) are exported as well,
 so a product can reuse the decoding without the connection management.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 from .ble import WITMOTION_BLE, BleProfile, wit_frame, wit_save, wit_unlock
 from .controller import (
