@@ -185,14 +185,14 @@ class NeedleView(QWidget):
             and self._model_pivot is not None
         ):
             q = self._model_rotation or Quaternion.from_two_vectors(self._model_axis, self._axis)
-            hub = self._model_pivot
+            pivot = self._model_pivot
             corners = [
                 (x, y, z)
                 for x in (lo[0], hi[0])
                 for y in (lo[1], hi[1])
                 for z in (lo[2], hi[2])
             ]
-            pts = [q.rotate(tuple(c[i] - hub[i] for i in range(3))) for c in corners]
+            pts = [q.rotate(tuple(c[i] - pivot[i] for i in range(3))) for c in corners]
             lo = tuple(min(p[i] for p in pts) for i in range(3))
             hi = tuple(max(p[i] for p in pts) for i in range(3))
 
